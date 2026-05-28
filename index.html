@@ -442,7 +442,7 @@ function normalizarCodigo(str) {
   // deja solo números (por si el lector mete espacios o guiones)
   return (str || "").toString().replace(/\D/g, "").trim();
 }
-``
+
 
 function getAny(obj, keys) {
   if (!obj) return null;
@@ -464,18 +464,32 @@ function alertError(msg, err) {
 // === 3) NAVEGACIÓN ===
 function mostrarPantalla(id) {
   const pantallas = [
-    "pantalla-bienvenida","pantalla-login","pantalla-inicio","pantalla-carga",
-    "pantalla-inv","pantalla-config","pantalla-ubicaciones","pantalla-rack-detalle","pantalla-stats"
+    "pantalla-bienvenida",
+    "pantalla-login",
+    "pantalla-inicio",
+    "pantalla-carga",
+    "pantalla-inv",
+    "pantalla-config",
+    "pantalla-ubicaciones",
+    "pantalla-rack-detalle",
+    "pantalla-stats"
   ];
+
   pantallas.forEach(p => {
     const el = $(p);
     if (el) el.classList.add("hidden-screen");
   });
+
   const actual = $(id);
   if (actual) actual.classList.remove("hidden-screen");
 
-  if (id === "pantalla-inicio" && operarioLogueado) {
-    $("nombre-operario-cartel").innerText = safeUpper(operarioLogueado);
+  // si estamos en el panel principal, aseguramos que no quede el scanner visible
+  if (id === "pantalla-inicio") {
+    detenerEscaneo(true);
+
+    if (operarioLogueado) {
+      $("nombre-operario-cartel").innerText = safeUpper(operarioLogueado);
+    }
   }
 }
 
@@ -535,7 +549,7 @@ async function conectarCerebro() {
     dun14: (r["(SKU / DUN-14)"] ?? "").toString().trim(),
     nombre: (r["Nombre del Producto"] ?? "").toString().trim()
 }));
-``
+
 
     console.log("✅ OK:", {
       inventario: puchoData.length,
@@ -607,13 +621,20 @@ function guardarNuevaPass() {
 
 // === 7) ESCÁNER (html5-qrcode) ===
 // Nota: necesita HTTPS / localhost para permisos de cámara. [3](https://scanapp.org/html5-qrcode-docs/docs/intro)
+
 async function iniciarEscaneo() {
   const wrap = $("scanner-wrap");
-wrap.classList.remove("hidden")
+  const readerEl = $("reader");
+  const btnDetener = $("btn-detener");
 
-  $("btn-detener").classList.remove("hidden");
+  await detenerEscaneo(true);
+
+  wrap.classList.remove("hidden");
+  readerEl.classList.remove("hidden");
+  btnDetener.classList.remove("hidden");
 
   try {
+      
     if (html5QrCode) {
       await html5QrCode.stop().catch(() => {});
       html5QrCode = null;
@@ -656,11 +677,7 @@ wrap.classList.remove("hidden")
        
          
 
-          await html5QrCode.stop().catch(() => {});
-          html5QrCode = null;
-
-          reader.classList.add("hidden");
-          $("btn-detener").classList.add("hidden");
+        await detenerEscaneo(true);
 
           $("nombre-prod-display").innerText = encontrado.Producto || "Producto";
           $("sku-prod-display").innerText = "SKU: " + (encontrado.SKU || "");
@@ -683,23 +700,40 @@ wrap.classList.remove("hidden")
     $("btn-detener").classList.add("hidden");
   }
 }
-``
 
 
 
-async function detenerEscaneo() {
+
+async function detenerEscaneo(silencioso = false) {
+  const wrap = $("scanner-wrap");
+  const readerEl = $("reader");
+  const btnDetener = $("btn-detener");
+
   try {
     if (html5QrCode) {
-      await html5QrCode.stop();
+      await html5QrCode.stop().catch(() => {});
+      await html5QrCode.clear().catch(() => {});
       html5QrCode = null;
     }
-    $("reader").classList.add("hidden");
-    $("btn-detener").classList.add("hidden");
-    console.log("✅ Cámara apagada");
   } catch (e) {
     console.error("No se pudo detener", e);
+  } finally {
+    // ocultar TODO el bloque visual
+    if (wrap) wrap.classList.add("hidden");
+    if (btnDetener) btnDetener.classList.add("hidden");
+
+    // dejar el reader limpio para la próxima apertura
+    if (readerEl) {
+      readerEl.innerHTML = "";
+      readerEl.classList.remove("hidden");
+    }
+
+    if (!silencioso) {
+      console.log("✅ Cámara apagada");
+    }
   }
 }
+
 
 function buscarProductoEnMaestro(code) {
   const scanned = normalizarCodigo(code);
