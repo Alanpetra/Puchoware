@@ -421,8 +421,8 @@
    <script>
 
 
-
-const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxxH3o5fAVLurowrU3pe6QTO-B2aEOTDYWQUvFUlXYTiCUlemdjP0WtGW6DjYTNJIQ/exec"
+                          
+const APPS_SCRIPT_URL = " https://script.google.com/macros/s/AKfycbwRa9rDBilbXFRyoBfFNn-qhfJ_NprZhBCCNP1HBgHnft5D9bigLs2p83-YXKl8oEOP/exec"
 const TERMINAL_ID = "042";
 const TOTAL_RACKS = 8;
 const TOTAL_LADOS = 2;
@@ -444,7 +444,6 @@ function getPosicionesPorRack(rackId) {
 const TOTAL_SLOTS = Object.values(POSICIONES_POR_RACK)
   .reduce((acc, cantidad) => acc + (cantidad * TOTAL_LADOS), 0);
 
-const APP_TOKEN = "PUCHOWARE-2026-INTERNO";
 
 // === 1) ESTADO GLOBAL ===
 let PRODUCTOS_MAESTRO = [];           // para escáner (Maestro)
@@ -455,10 +454,7 @@ let productoActual = null;
 
 let operarioLogueado = localStorage.getItem("operarioActual");
 
-// Login local (mínimo) + posibilidad de cambio de clave en localStorage
-const clavesDefault = { "alan": "granix2026", "juan": "deposito1", "5039": "1234" };
-const clavesStorageKey = "puchoware_claves_local";
-const clavesLocal = JSON.parse(localStorage.getItem(clavesStorageKey) || "{}");
+
 
 // === 2) UTILIDADES ===
 const $ = (id) => document.getElementById(id);
@@ -510,25 +506,36 @@ function mostrarPantalla(id) {
 
 // === 4) API (Apps Script) ===
 // Apps Script suele redirigir a script.googleusercontent.com, por eso mantenemos redirect: "follow". [2](https://developers.google.com/apps-script/guides/content)
-async function apiGet(sheet) {
-  if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL.includes("PEGAR_ACA")) throw new Error("Falta APPS_SCRIPT_URL");
-  const url = `${APPS_SCRIPT_URL}?action=get&sheet=${encodeURIComponent(sheet)}`;
-  const res = await fetch(url, { method: "GET", redirect: "follow" });
-  if (!res.ok) throw new Error(`GET ${sheet} -> ${res.status}`);
-  return await res.json();
+const getSesion = () => localStorage.getItem("sesionToken") || "";
+
+function sesionExpirada() {
+if (e.message === "SESION") { alert("Tu sesión expiró. Ingresá de nuevo."); mostrarPantalla("pantalla-login"); return; }
+  localStorage.removeItem("sesionToken");
+  localStorage.removeItem("operarioActual");
+  operarioLogueado = null;
+  throw new Error("SESION");
 }
 
-// Para evitar CORS/preflight con Apps Script, usamos Content-Type text/plain (simple request). [4](https://stackoverflow.com/questions/53433938/how-do-i-allow-a-cors-requests-in-my-google-script)[7](https://diyavijay.medium.com/struggling-with-cors-in-google-apps-script-heres-the-fix-e3eec09f07dd)
+async function apiGet(sheet) {
+  const url = `${APPS_SCRIPT_URL}?action=get&sheet=${encodeURIComponent(sheet)}&sesion=${encodeURIComponent(getSesion())}`;
+  const res = await fetch(url, { method: "GET", redirect: "follow" });
+  if (!res.ok) throw new Error(`GET ${sheet} -> ${res.status}`);
+  const j = await res.json();
+  if (j.error === "No autorizado") sesionExpirada();
+  return j;
+}
+
 async function apiPost(payload) {
-  if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL.includes("PEGAR_ACA")) throw new Error("Falta APPS_SCRIPT_URL");
   const res = await fetch(APPS_SCRIPT_URL, {
     method: "POST",
     redirect: "follow",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify(payload)
+    body: JSON.stringify({ ...payload, sesion: getSesion() })
   });
   if (!res.ok) throw new Error(`POST -> ${res.status}`);
-  return await res.json();
+  const j = await res.json();
+  if (j.error === "No autorizado") sesionExpirada();
+  return j;
 }
 
 // === 5) CARGA DE DATOS (CEREBRO) ===
@@ -573,6 +580,11 @@ async function conectarCerebro() {
     });
 
   } catch (err) {
+    if (err.message === "SESION") {
+    alert("Tu sesión expiró. Ingresá de nuevo.");
+    mostrarPantalla("pantalla-login");
+    return;
+  }
     console.warn("⚠️ No se pudo sincronizar con Apps Script. Intentando fallback productos.json...", err);
     await cargarFallbackLocal();
   }
@@ -598,24 +610,25 @@ async function cargarFallbackLocal() {
 }
 
 // === 6) LOGIN / PERFIL ===
-function intentarLogin() {
+async function intentarLogin() {
   const u = safeLower($("user").value).trim();
   const p = $("pass").value;
-
-  const claveLocal = clavesLocal[u];
-  const clave = (claveLocal !== undefined ? claveLocal : clavesDefault[u]);
-
-  if (clave === p) {
+  try {
+    const r = await apiPost({ action: "login", user: u, pass: p });
+    if (!r.ok) return alert("❌ " + (r.error || "Legajo o clave incorrectos"));
     localStorage.setItem("operarioActual", u);
+    localStorage.setItem("sesionToken", r.sesion);
     operarioLogueado = u;
+    await conectarCerebro();
     mostrarPantalla("pantalla-inicio");
-  } else {
-    alert("Clave incorrecta");
+  } catch (e) {
+    alertError("No pude conectar con el servidor.", e);
   }
 }
 
 function cerrarSesion() {
   localStorage.removeItem("operarioActual");
+  localStorage.removeItem("sesionToken");
   location.reload();
 }
 
@@ -623,15 +636,18 @@ function olvideClave() {
   alert("📌 Recupero de clave: hablá con supervisión para reset. (Implementable con Apps Script si querés)");
 }
 
-function guardarNuevaPass() {
+async function guardarNuevaPass() {
   const nueva = $("nueva-pass").value.trim();
   if (nueva.length < 4) return alert("Mínimo 4 caracteres");
-  if (!operarioLogueado) return alert("No hay usuario logueado");
-  clavesLocal[operarioLogueado] = nueva;
-  localStorage.setItem(clavesStorageKey, JSON.stringify(clavesLocal));
-  alert("✅ Clave actualizada en este dispositivo.");
-  $("nueva-pass").value = "";
-  mostrarPantalla("pantalla-inicio");
+  try {
+    const r = await apiPost({ action: "changePass", nueva });
+    if (!r.ok) throw new Error(r.error || "No ok");
+    alert("✅ Clave actualizada.");
+    $("nueva-pass").value = "";
+    mostrarPantalla("pantalla-inicio");
+  } catch (e) {
+    if (e.message !== "SESION") alertError("No pude cambiar la clave.", e);
+  }
 }
 
 // === 7) ESCÁNER (html5-qrcode) ===
@@ -1137,9 +1153,12 @@ function obtenerClaseVencimiento(f) {
 
 // === 13) BOOT ===
 window.onload = async () => {
-  await conectarCerebro();
-  if (operarioLogueado) mostrarPantalla("pantalla-inicio");
-  else mostrarPantalla("pantalla-bienvenida");
+  if (operarioLogueado) {
+    await conectarCerebro();
+    if (operarioLogueado) mostrarPantalla("pantalla-inicio");
+  } else {
+    mostrarPantalla("pantalla-bienvenida");
+  }
 };
 </script>
 
